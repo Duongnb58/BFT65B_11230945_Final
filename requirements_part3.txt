@@ -1,0 +1,6 @@
+# Part 3 additions to the unchanged, pinned Part 1–2 environment.
+-r requirements.txt
+pandas==2.2.3
+polars==1.35.2
+pyspark==4.0.1
+psutil==7.0.0

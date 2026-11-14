@@ -1,6 +1,6 @@
 # A Big-Data Pipeline for Bank Failure Early Warning
 
-**BFT65B — Big Data Analytics in Finance | Part 1: Acquisition & Storage (15 points); Part 2: Data Quality & Panel (20 points)**
+**BFT65B — Big Data Analytics in Finance | Part 1: Acquisition & Storage (15 points); Part 2: Data Quality & Panel (20 points); Part 3: Scalable Processing (25 points)**
 
 This repository implements the completed Part 1 acquisition/storage workflow and the Part 2 automated data-quality audit and clean bank–quarter panel. Part 2 reads only the verified Part 1 acquisition output and preserves its hashes; it does not repeat FDIC API retrieval or the storage benchmark. All derived data, event-reconciliation tables and figures remain outside GitHub on Google Drive.
 
@@ -195,3 +195,94 @@ MyDrive/BFT65B_11230945_Final/
 The automated report is a **data-quality evidence file**, not the final research report. It documents the rules, exclusions, source lineage, temporal restrictions, empirical counts and three descriptive figures. The Part 2 evaluation is based on direct FDIC observations; no row counts, missing-value rates, exit frequencies or performance claims are fabricated in source code.
 
 The FDIC BankFind public endpoints can revise historical observations. Therefore a fully point-in-time historical vintage is not established merely by avoiding future columns; a research model must explicitly state the publication-lag assumption and the limits of retrospective public data. For merger-specific conclusions, additional dated institution history events are needed. Sources: [FDIC BankFind Suite API](https://api.fdic.gov/banks/docs/), [FDIC BankFind bulk/history definitions](https://banks.data.fdic.gov/bankfind-suite/bulkData), and the BFT65B final examination sheet. Code development and documentation used OpenAI ChatGPT assistance; the operator must validate the Colab outputs and cite that use in the submitted report.
+
+## 9. Part 3 – Scalable Processing (25 points)
+
+### 9.1 Scope and dependencies
+
+Run [`notebooks/04_scalable_processing_colab.ipynb`](notebooks/04_scalable_processing_colab.ipynb) after Part 2 Notebook 03 has produced a verified bank–quarter panel. The Part 3 input is **the explicit Part 2 run `run_20261114T175314Z`**; its source manifest, validation report, 170 Parquet partitions, row counts and SHA-256 checksums are verified before benchmarking. No new FDIC API requests or modifications to Parts 1–2 occur.
+
+The notebook installs [`requirements_part3.txt`](requirements_part3.txt), which extends the existing pinned environment with pandas, Polars, PySpark and psutil. **Java 17 or later** is required for PySpark. All eight Part 3 notebook sections run on a Google Colab CPU runtime; PySpark uses `local[2]` on the *same machine* as pandas and Polars. The benchmark does **not** execute a cluster job.
+
+### 9.2 Exact analytical workloads
+
+The algorithms in `src/fdic_pipeline/processing_engines.py` implement the following two transformations with identical definitions across all three engines:
+
+1. **`quarter_summary`**: read `CERT`, `REPDTE`, `ASSET`, `DEP`, `ROA` and the Part 2 `DQ_EXTREME_ROE` flag; filter to reporting dates at or after 2000-03-31; group by quarter; compute observed bank-quarter count, total assets, total deposits (all-null group gives zero), mean of observed ROA and count of extreme-ROE flags. The filter and projection can be pushed to Parquet scans where supported.
+2. **`adjacent_quarter_growth`**: read `CERT`, `REPDTE`, `ASSET`; order by certificate and quarter; find the previous report of that bank; compute growth `100 * (ASSET / previous_ASSET - 1)` **only when the preceding reported quarter is exactly adjacent**. If a bank skips a quarter, growth remains null; there is no forward fill or interpolation. Group by reporting date; return the number of observations, number of valid adjacent-quarter pairs and their mean asset growth.
+
+These are analytical transformations for the processing-engine comparison, **not** the Part 4 modelling feature table. No future failure dates, current-snapshot institution status or target labels enter either computation.
+
+### 9.3 Input sizes and fair benchmark protocol
+
+The benchmark stages verified Part 2 Parquet files from Drive to the Colab local filesystem, so Drive network/mount I/O is excluded from timed reads. It uses two *observed* subsets:
+
+- **Half**: the latest 85 quarter partitions, with the actual source row count recorded;
+- **Full**: all 170 quarter partitions.
+
+No synthetic replication is used for scaling. Row counts need not be proportional to the number of selected quarters; quarter-summary filtering and historical-lag boundary effects mean the two samples are distinct analytical datasets.
+
+For each **2 sizes × 2 workloads × 3 engines = 12 scenarios**, the runner performs **one warmup and three measured executions** in a single initialized engine process. The protocol therefore produces **12 warmup and 36 measured trials**. Each engine applies the same projection, date filter, grouping and, for lag, adjacency rule. The randomized order of engine scenarios is fixed by seed **11230945**. Polars uses lazy Parquet scanning; pandas uses its PyArrow reader with column/predicate pushdown (rather than an artificially inefficient CSV baseline); PySpark uses native Spark SQL functions without Python UDFs.
+
+The measured interval includes reading local Parquet, constructing/computing the transformation and materializing the small aggregated output. **Python imports, SparkSession/JVM startup and figure generation are excluded**. The protocol samples Python process and descendant-process RSS approximately every 50 ms, including Spark's local JVM; this is a peak process-tree estimate, not exact dataframe/heap allocation. All engines operate with two CPU worker threads or cores where available. System cache, Python/JVM memory management and Colab contention cannot be completely controlled.
+
+### 9.4 Correctness before comparison
+
+Every warmup and measured result is recorded in `workers/*.json` with the complete quarter-level output. An independent audit compares **every row of every result** against pandas for the same workload/input size: quarter dates, integer counts, missing values and field names match exactly; floating aggregates are compared with relative tolerance **1e-10** and absolute tolerance **1e-7** to account for different reduction orders. Benchmark results are rejected if any observation, output size, warmup flag or trial count is inconsistent. Thus an apparently faster engine cannot pass while computing a different answer.
+
+### 9.5 Engine execution plans and interpretation
+
+The runner saves optimized **Polars `LazyFrame.explain(optimized=True)`** plans and **Spark formatted physical plans** under `plans/`, and writes `plan_inspection.csv` plus `execution_plan_discussion.md`. Inspect the plans for Parquet scans, projected columns, predicate pushdown, hash aggregation, window/sort operators and Spark exchange/shuffle. An exchange in `local[2]` is a local shuffle, not evidence of network traffic across machines. pandas' eager DataFrame API does not provide a comparable optimizer plan.
+
+### 9.6 Results and cluster decision
+
+The output for one new Part 3 run is:
+
+```
+MyDrive/BFT65B_11230945_Final/scalable_processing/run_YYYYMMDDTHHMMSSZ/
+├── input_snapshot.json          # Part 1/2 lineage + all selected partition hashes
+├── environment.json             # versions, seed, local[2], methods
+├── workers/*.json               # complete per-trial aggregate outputs
+├── plans/*.txt                  # optimized Polars and physical Spark plans
+├── trials.csv                   # 48 executions; 12 warmup, 36 measured
+├── performance_summary.csv      # medians, ranges, sampled memory
+├── cross_engine_comparisons.csv # pandas/Polars/Spark comparison by workload/size
+├── scaling.csv                  # empirical size and timing ratios
+├── equivalence.json             # every engine/result comparison
+├── plan_inspection.csv
+├── execution_plan_discussion.md
+├── figures/runtime_comparison.png
+├── figures/scaling_comparison.png
+├── figures/peak_process_rss.png
+├── part3_manifest.json
+└── part3_validation.json
+```
+
+When drawing a cluster conclusion, use the measured full-panel latency, RSS and half-to-full scaling ratios. **Do not invent a break-even dataset size from a two-size, one-machine experiment**. Spark `local[2]` verifies the API and physical plan but does not measure true multinode scalability. Deployment on a cluster becomes justified when tested workload size, concurrency, memory, latency targets or operational constraints exceed a single-node system *and* a distributed benchmark demonstrates sufficient benefit after shuffle and system overhead.
+
+### 9.7 Reproduction and acceptance
+
+1. From Colab, open <https://colab.research.google.com/github/Duongnb58/BFT65B_11230945_Final/blob/main/notebooks/04_scalable_processing_colab.ipynb>.
+2. Run all notebook sections in order. Section 1 installs the pinned Part 3 dependencies and runs `tests/test_scalable_processing.py` and `tests/test_processing_integration.py`. **No test may fail or be skipped.** In particular, the integration test must execute pandas, Polars and a local Spark JVM on synthetic Parquet files.
+3. Section 2 validates the precise Part 2 run and its Part 1 source. Section 3 fixes the protocol and a unique output directory. Section 4 stages the verified input files locally, executes 12 scenarios and independently audits their outputs. Sections 5–7 display comparisons, execution plans and figures; Section 8 performs read-only output verification.
+4. Successful completion prints **`Part 3 evidence: PASSED`** and preserves a new `part3_validation.json` linked by SHA-256 to the current Part 2 manifest and the Git commit. Save the *executed* notebook on the same GitHub path, with summary outputs and fixed seed. Do not upload data or benchmark results to GitHub.
+
+Equivalent CLI commands (after mounting Drive and installing `requirements_part3.txt`):
+
+```bash
+python -m pytest -q -rs tests/test_scalable_processing.py tests/test_processing_integration.py
+python run_scalable_processing.py run \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/scalable_processing/run_YYYYMMDDTHHMMSSZ \
+  --local-dir /content/bft65b_part3_stage_YYYYMMDDTHHMMSSZ \
+  --git-commit FULL_40_CHARACTER_GIT_SHA
+python run_scalable_processing.py verify \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/scalable_processing/run_YYYYMMDDTHHMMSSZ
+```
+
+### 9.8 Attribution and limitations
+
+Methods are based on the instructor's examination requirements, the verified FDIC acquisition, and official engine documentation: [pandas Parquet I/O](https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html), [Polars lazy API](https://docs.pola.rs/user-guide/lazy/using/), and [PySpark SQL](https://spark.apache.org/docs/latest/api/python/). The source-code preparation included OpenAI ChatGPT assistance and requires acknowledgment under the course academic-integrity rule. Only actually executed measurements may be reported; validate the Colab results and cite the exact run ID, package versions and Git revision.

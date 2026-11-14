@@ -1,8 +1,8 @@
 # A Big-Data Pipeline for Bank Failure Early Warning
 
-**BFT65B — Big Data Analytics in Finance | Part 1: Acquisition & Storage (15 points)**
+**BFT65B — Big Data Analytics in Finance | Part 1: Acquisition & Storage (15 points); Part 2: Data Quality & Panel (20 points)**
 
-This repository contains the executable Part 1 pipeline. It acquires FDIC Financials, Failures and Institutions records; verifies the source scope and file integrity; stores typed Snappy-compressed Parquet; constructs a logically equivalent uncompressed CSV / flat Parquet comparison; measures three read workloads; and audits the recorded results. Part 2 will use these verified inputs for bank-quarter data-quality analysis and point-in-time panel construction.
+This repository implements the completed Part 1 acquisition/storage workflow and the Part 2 automated data-quality audit and clean bank–quarter panel. Part 2 reads only the verified Part 1 acquisition output and preserves its hashes; it does not repeat FDIC API retrieval or the storage benchmark. All derived data, event-reconciliation tables and figures remain outside GitHub on Google Drive.
 
 The source files do not contain downloaded FDIC records, benchmark output files or claims about results that have not been measured in the current execution.
 
@@ -22,7 +22,7 @@ Sources: [FDIC BankFind Suite API](https://api.fdic.gov/banks/docs/), [FDIC Fina
 
 ## 2. Execution sequence
 
-Two notebooks cover Part 1 without repeating acquisition or benchmark work:
+The execution order is Part 1 Notebook 01 → Part 1 Notebook 02 → Part 2 Notebook 03. Part 2 depends on the verified acquisition dataset, not on the performance benchmark results. The original two Part 1 notebooks remain unchanged:
 
 | Notebook | Sections | Dependency | Produced evidence |
 |---|---|---|---|
@@ -69,7 +69,7 @@ BFT65B_11230945_Final/
     └── figures/*.png
 ```
 
-The two `run_...` directories use the **same identifier** and are connected by stored source hashes. Benchmark preparation additionally creates local `/content/bft65b_11230945_storage/` files; these are temporary and are excluded from the repository.
+The two Part 1 `run_...` directories use the **same identifier** and are connected by stored source hashes. Benchmark preparation additionally creates local `/content/bft65b_11230945_storage/` files; these are temporary and are excluded from the repository.
 
 ## 3. Acquisition method and quality gate
 
@@ -123,3 +123,75 @@ Replace `run_YYYYMMDDTHHMMSSZ` with **one identical concrete run ID** for both r
 The final report must be in English, at most 20 pages plus a 10-page appendix. Page 1 must state author, student ID, GitHub URL, data acquisition method and date, actual row counts, and eventual development/test windows with their failure counts. Development/test periods are determined in later parts; they are **not** inferred by Part 1.
 
 The report must distinguish measured outcomes from assumptions and must cite FDIC, the course assignment, the instructor's starter, the Apache Arrow documentation and any AI assistance or third-party code used. This repository was prepared with assistance from OpenAI ChatGPT, with source methods adapted from the instructor's starter; the researcher is responsible for executing, reviewing and validating all results. Do not present results from an earlier repository or Drive as though they had been measured in this study.
+
+
+## 8. Part 2 – Data Quality & Clean Bank–Quarter Panel (20 points)
+
+### 8.1 Reproduction and exact dependency
+
+Run [`notebooks/03_data_quality_panel_colab.ipynb`](notebooks/03_data_quality_panel_colab.ipynb) after Part 1 Notebook 01 has produced `fdic_1984Q1_2026Q2/manifest.json` and `verification_report.json`. The notebook reads the **same** Drive root and never calls the FDIC API or repeats storage measurements. Parts 1 and 2 share `requirements.txt`: `requests`, `pyarrow`, `matplotlib` and `pytest`, each pinned to a concrete version. The source schema comes directly from `src/fdic_pipeline/acquisition.py`.
+
+Notebook: <https://colab.research.google.com/github/Duongnb58/BFT65B_11230945_Final/blob/main/notebooks/03_data_quality_panel_colab.ipynb>
+
+| Section | Input / analysis | Evidence / acceptance |
+|---|---|---|
+| 1. Source and tests | GitHub commit, pinned environment, deterministic quality tests and a real Parquet integration test | No failed or skipped tests |
+| 2. Part 1 contract | Acquisition manifest, verification report | 170 quarters, observed row counts, field selection, hashes |
+| 3. Quality policy | Current-report checks; explicit 90-day availability *assumption* | Run ID and policy recorded |
+| 4. Panel generation | Verified 170 Financials partitions and both full reference files | Clean panel + detailed audit + verified manifest |
+| 5. Quality findings | Null rates by field/year, quarantined rows, financial anomaly flags | Tables and images based on the observed FDIC extract |
+| 6. Exit review | CERT-linked dated failures; dated institution endings; financial reporting history | Disjoint terminal classes; no terminal information in predictors |
+| 7. Independent verification | Manifest, each output partition and audit-file checksums | `Part 2 evidence: PASSED` |
+
+Command-line equivalent after mounting Drive and cloning the repository:
+
+```bash
+python -m pytest -q -rs tests/test_data_quality.py tests/test_panel_integration.py
+python run_data_quality.py run \
+  --source-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_YYYYMMDDTHHMMSSZ \
+  --availability-lag-days 90
+python run_data_quality.py verify \
+  --source-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_YYYYMMDDTHHMMSSZ
+```
+
+Replace the run ID with the same unique UTC identifier in both commands. The **run** command refuses to overwrite an existing output directory. If processing is interrupted before validation, inspect/remove the incomplete Part 2 output directory before starting a new run; source acquisition files remain unchanged.
+
+### 8.2 Quality rules and scientific interpretation
+
+- **Missingness:** full field-level and field-year audit, no imputation or global clipping. Indicators such as ROA/ROE can be absent in early periods or for particular institutions; missingness is documented before later training-only transformations.
+- **Core bank-quarter validity:** `(CERT, REPDTE)` must be unique and reporting dates must match the correct quarter. Rows with null/nonpositive `ASSET` are recorded in `quarantined_rows.csv` rather than silently corrected; all other reported amounts and ratios are preserved.
+- **Accounting plausibility screens:** negative `DEP` or `LNLSGR`, deposits or gross loans above `ASSET`, `NCLNLS` above nonnegative `LNLSGR`, and `|ROA|`/`|ROE|` above 100 percentage points. These are **review flags**, not claims of data-entry errors or exclusion criteria. Negative equity is not automatically treated as invalid.
+- **Bank history:** `PRIOR_REPORT_COUNT` and `REPORT_GAP_QUARTERS` use earlier reports for the same CERT. Interior reporting gaps are counted but never interpolated. Later reports do not retrospectively change earlier-row features.
+- **Exit review:** `terminal_exits.csv` combines the last observed financial reporting quarter with dated failure events and dated institution terminations. It distinguishes confirmed failures, documented other exits, right-censoring, unresolved disappearance, and inconsistent/ambiguous event histories. A bank disappearing from Financials is **not** automatically considered a failure or a merger. Failure records without `CERT` are retained in the linkage audit and never matched by fabricated identifiers. The nine selected Institutions fields do **not** provide a complete dated merger history; `CHANGEC1` or the current `ACTIVE` flag is not treated as historical status for all quarters.
+- **Point in time:** the clean panel retains current-quarter FDIC observations, contemporaneous quality flags and historical reporting counts/gaps. It does **not** contain future failure events, current-snapshot institution status or retrospectively known exit types. `ASSUMED_AVAILABLE_FROM = REPDTE + 90 days` is an *explicit publication-lag assumption*, not an FDIC-recorded release date. A strict historical-vintage or release-time guarantee requires additional source metadata and remains a limitation. Part 4 must also respect the examination's label maturity limit of 2025Q2 and use a time-ordered evaluation.
+
+### 8.3 Produced Drive artifacts and next-stage interface
+
+```text
+MyDrive/BFT65B_11230945_Final/
+├── fdic_1984Q1_2026Q2/                   # original verified Part 1 source; unchanged
+└── data_quality_panel/run_YYYYMMDDTHHMMSSZ/
+    ├── panel/year=YYYY/quarter=Q/part-00000.parquet  # 170 typed partitions
+    ├── quality_variables.csv             # field-level missingness, observed extrema
+    ├── quality_by_year.csv               # year-by-variable missingness
+    ├── quality_rules.csv                 # current-quarter screening counts
+    ├── coverage_by_quarter.csv           # coverage and quarantine counts
+    ├── quarantined_rows.csv              # explicitly excluded bank-quarter keys
+    ├── anomaly_examples.csv              # bounded review samples by rule
+    ├── failure_linkage.csv               # source event linkage (separate from predictors)
+    ├── terminal_exits.csv                # retrospective classifications (separate)
+    ├── quality_report.md                 # autogenerated data-quality evidence
+    ├── figures/*.png
+    ├── part2_manifest.json               # source hashes, output partition hashes and policy
+    └── part2_validation.json             # independent verification verdict
+```
+
+**Part 3 input:** the verified `panel/` directory, with the exact run ID and manifest. `terminal_exits.csv` is not a contemporaneous predictor table and must not be joined to model features as an as-of characteristic. Part 4 must define future failure labels separately, using dated event evidence, chronology and outcome maturity requirements.
+
+### 8.4 Evidence and limitations
+
+The automated report is a **data-quality evidence file**, not the final research report. It documents the rules, exclusions, source lineage, temporal restrictions, empirical counts and three descriptive figures. The Part 2 evaluation is based on direct FDIC observations; no row counts, missing-value rates, exit frequencies or performance claims are fabricated in source code.
+
+The FDIC BankFind public endpoints can revise historical observations. Therefore a fully point-in-time historical vintage is not established merely by avoiding future columns; a research model must explicitly state the publication-lag assumption and the limits of retrospective public data. For merger-specific conclusions, additional dated institution history events are needed. Sources: [FDIC BankFind Suite API](https://api.fdic.gov/banks/docs/), [FDIC BankFind bulk/history definitions](https://banks.data.fdic.gov/bankfind-suite/bulkData), and the BFT65B final examination sheet. Code development and documentation used OpenAI ChatGPT assistance; the operator must validate the Colab outputs and cite that use in the submitted report.

@@ -367,3 +367,100 @@ The feature table includes `LABEL_STATUS` and `SPLIT` exclusively for auditing; 
 The FDIC extract records reporting quarters but not the historical timestamp of first public availability of every individual observation. The 90-day lag is an explicit approximation. Failure records lacking CERT remain unmatched. Censoring competing exits restricts the supervised population and changes the interpretation from an unconditional full-population failure rate. The test interval is a crisis-period holdout and does not measure performance across later economic regimes. These limitations must accompany modelling results; a passing manifest check cannot establish full historical-vintage correctness.
 
 Sources: [FDIC BankFind Suite API documentation](https://api.fdic.gov/banks/docs/), the BFT65B course examination sheet, Part 1 instructor starter, official documentation for scikit-learn Pipeline, SimpleImputer and RobustScaler, and disclosed AI assistance as documented in this repository's academic-integrity note.
+
+## 11. Part 5 – Modelling & Validation (15 points)
+
+### 11.1 Purpose and immutable inputs
+
+Run [`notebooks/06_modelling_validation_colab.ipynb`](notebooks/06_modelling_validation_colab.ipynb) **after** Part 4 has passed. Part 5 consumes the specifically validated feature pipeline run
+`feature_pipeline/run_20261115T093554Z/`, produced from Part 2 run `run_20261114T175314Z/`. The Part 3 run `run_20261114T190627Z/` is checked as processing-method provenance only and is not used as a model dataset.
+
+The development sample is 1984Q1–2006Q4 (1,132,341 labelled bank–quarter observations; 6,562 positive labels). The sealed holdout is 2008Q1–2014Q4 (204,912 labelled observations; 1,496 positive bank–quarter labels and 510 distinct positive CERTs). **Those holdout counts establish eligibility, not a basis for model or threshold selection.** Year 2007 is excluded; the four-quarter prediction horizon makes the purge necessary.
+
+### 11.2 Temporal development and candidate models
+
+The experiment uses three frozen expanding-window folds, with **four entire reporting quarters between each training end and validation start**:
+
+| Fold | Training reports | Purged reports | Validation reports |
+|---|---|---|---|
+| 1 | 1984Q1–1989Q4 | 1990Q1–1990Q4 | 1991Q1–1993Q4 |
+| 2 | 1984Q1–1993Q4 | 1994Q1–1994Q4 | 1995Q1–1998Q4 |
+| 3 | 1984Q1–1998Q4 | 1999Q1–1999Q4 | 2000Q1–2003Q4 |
+
+The candidates are a prevalence-only DummyClassifier, regularized logistic regression and histogram gradient boosting with fixed hyperparameters. Both predictive candidates use a **new** sklearn Pipeline in each fold: `SimpleImputer(median, add_indicator=True, keep_empty_features=True) → RobustScaler → model`. The saved Part 4 preprocessor is **not** used during cross-validation. Average precision (AP/PR-AUC) averaged equally over development folds selects the predictive model; ROC-AUC, Brier score and recall at the highest 1%/5% of bank-quarter risk scores provide diagnostics. No random row-level CV is used.
+
+### 11.3 Estimated decision cost and threshold
+
+The cost calculation uses two inputs **available by development end**:
+
+1. **Missed failure proxy:** median strictly positive `Failures.COST` among FDIC failure events dated no later than 2006Q4 (in USD thousands). This is an observed resolution-expense measure, **not an estimate of preventable losses from supervision**.
+2. **False-alarm proxy:** **assumed** supervisory review expense equal to **0.1% of the median ASSET** implied by `LOG_ASSET` in the development sample (also USD thousands). FDIC data contain no direct regulatory examination cost for a false positive; the rate is explicitly an assumption, not FDIC data.
+
+The decision unit is a **bank–quarter alarm**. An institution warned in several quarters can contribute repeated alerts, so these totals are *not* unique-bank policy costs. The selected threshold minimizes `false_alarms × assumed_review_cost + missed_positive_bank_quarters × median_failure_COST` using only the selected model's out-of-fold **development predictions**. Ties favor fewer alarms. Half and twice the assumed review expense provide sensitivity scenarios. The scores are not assumed calibrated event probabilities; the threshold is selected empirically, not calculated using a calibrated Bayes formula.
+
+### 11.4 Spark MLlib demonstration
+
+A separate, bounded local `Spark MLlib` pipeline uses five predetermined financial predictors, Spark median imputation, vector assembly and logistic regression. It trains on the first fold's development training period and validates on that fold's later development period. All positives are retained and negatives are subsampled with a fixed seed to control demonstration runtime; **the demo metrics are not representative of full-population prevalence** and the demo is not an additional model candidate. Spark runs in `local[2]`, not on a multi-node cluster. It never reads the test holdout.
+
+### 11.5 Two gated execution stages and one held-out test
+
+The notebook's Section 4 runs **`train`**, fitting the development candidates, recording frozen fold outputs, estimating the cost proxies, choosing one model and one threshold, training the final model on all development observations, and writing a SHA-256-protected `selection.lock.json`. It **does not open** test Parquet files for model selection.
+
+Only after reviewing the locked development evidence should Section 7 run **`evaluate`**. It writes `test_attempt.json` *before* opening the holdout for the first and only scoring pass, then produces test predictions and pre-committed metrics for the prevalence baseline and the selected model. A second `evaluate` command for the same run is rejected. If evaluation is interrupted after its marker is created, do not silently rerun it or change the test results. The **`verify`** command recomputes result metrics from the saved predictions and checks signatures without training or scoring the test again.
+
+Use the following commands after installing `requirements_part5.txt` and verifying a Java 17+ runtime:
+
+```bash
+python -m pytest -q -rs tests/test_model_policy.py tests/test_model_integration.py
+
+python run_modelling_validation.py train \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --part3-dir /content/drive/MyDrive/BFT65B_11230945_Final/scalable_processing/run_20261114T190627Z \
+  --part4-dir /content/drive/MyDrive/BFT65B_11230945_Final/feature_pipeline/run_20261115T093554Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/modelling_validation/run_YYYYMMDDTHHMMSSZ \
+  --git-commit FULL_40_CHARACTER_GIT_SHA
+
+python run_modelling_validation.py evaluate \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --part4-dir /content/drive/MyDrive/BFT65B_11230945_Final/feature_pipeline/run_20261115T093554Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/modelling_validation/run_YYYYMMDDTHHMMSSZ
+
+python run_modelling_validation.py verify \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --part4-dir /content/drive/MyDrive/BFT65B_11230945_Final/feature_pipeline/run_20261115T093554Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/modelling_validation/run_YYYYMMDDTHHMMSSZ
+```
+
+Keep the *same newly created run ID* in all three commands; `train` rejects an existing output directory. Colab Section 1 requires **zero failures and zero skipped tests**, including real Spark integration. Save the executed notebook back to `notebooks/06_modelling_validation_colab.ipynb` on GitHub after successful verification. No FDIC data, trained models, output predictions or figures are committed to GitHub.
+
+### 11.6 Output and limitations
+
+The Drive directory `modelling_validation/run_.../` contains:
+
+```text
+development_folds.csv                  # Nine fold/model assessments
+development_model_comparison.csv      # Development-only AP ranking
+development_predictions.csv           # Selected model's OOF development scores
+model_costs.json                     # Observed FDIC COST + assumed review-cost proxy
+threshold_policy.json                # Frozen chosen threshold + sensitivity
+spark_mllib_demo.json                # Local MLlib development-only check
+development_summary.json
+selected_model.joblib                # Final development-fit sklearn pipeline
+baseline_model.joblib
+selection.lock.json                   # Saved before test access
+figures/development_pr.png
+figures/development_fold_ap.png
+test_attempt.json                     # Created before one holdout access
+test_metrics.csv                      # Final baseline/selected metrics
+test_predictions.parquet              # Immutable scored test table
+test_summary.json
+figures/test_pr.png
+figures/test_confusion.png
+evaluation_manifest.json
+part5_validation.json
+```
+
+Primary limitations: selected historical folds are not a guarantee of performance outside their eras; repeated bank-quarters are correlated; the FDIC COST and assumed review expense are proxies, not a causal intervention model; raw scores are not independently calibrated; the 90-day source-availability lag remains assumed rather than historical-vintage verified; the crisis-era holdout is only one economic regime. Report only actual Colab metrics from the executed run and the declared limitations. Reference official [scikit-learn model-evaluation documentation](https://scikit-learn.org/1.7/modules/model_evaluation.html), [Spark ML documentation](https://spark.apache.org/docs/4.0.1/ml-pipeline.html), the FDIC field dictionary and the course examination sheet. Source-code and report assistance from ChatGPT must be acknowledged as in this repository's academic-integrity note.

@@ -1,0 +1,4 @@
+# Compatible with the pinned Part 4 dataset and sklearn preprocessing.
+-r requirements_part4.txt
+pyspark==4.0.1
+psutil==7.0.0

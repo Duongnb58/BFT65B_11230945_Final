@@ -1,10 +1,8 @@
 # A Big-Data Pipeline for Bank Failure Early Warning
 
-**BFT65B — Big Data Analytics in Finance | Part 1: Acquisition & Storage (15 points); Part 2: Data Quality & Panel (20 points); Part 3: Scalable Processing (25 points)**
+**BFT65B — Big Data Analytics in Finance | Parts 1–6: Final Individual Research Project**
 
-This repository implements the completed Part 1 acquisition/storage workflow and the Part 2 automated data-quality audit and clean bank–quarter panel. Part 2 reads only the verified Part 1 acquisition output and preserves its hashes; it does not repeat FDIC API retrieval or the storage benchmark. All derived data, event-reconciliation tables and figures remain outside GitHub on Google Drive.
-
-The source files do not contain downloaded FDIC records, benchmark output files or claims about results that have not been measured in the current execution.
+This repository provides the reproducible source code and six executed Colab notebooks for the FDIC bank-failure early-warning study. Parts 1–5 implement acquisition, data-quality assessment, scalable processing, point-in-time feature engineering and chronologically separated model evaluation. Part 6 synthesizes their measured evidence; it does not introduce an additional data-processing stage. Source code and notebook outputs are versioned in GitHub; full datasets, model artifacts and experimental evidence remain on Google Drive and are not committed.
 
 ## 1. Data and field selection
 
@@ -464,3 +462,46 @@ part5_validation.json
 ```
 
 Primary limitations: selected historical folds are not a guarantee of performance outside their eras; repeated bank-quarters are correlated; the FDIC COST and assumed review expense are proxies, not a causal intervention model; raw scores are not independently calibrated; the 90-day source-availability lag remains assumed rather than historical-vintage verified; the crisis-era holdout is only one economic regime. Report only actual Colab metrics from the executed run and the declared limitations. Reference official [scikit-learn model-evaluation documentation](https://scikit-learn.org/1.7/modules/model_evaluation.html), [Spark ML documentation](https://spark.apache.org/docs/4.0.1/ml-pipeline.html), the FDIC field dictionary and the course examination sheet. Source-code and report assistance from ChatGPT must be acknowledged as in this repository's academic-integrity note.
+
+
+## 12. Part 6 – Conclusions (5 points)
+
+Part 6 is an **evidence-based interpretation of Parts 1–5**, not a new computational stage. The examination requests answers to Q1–Q3, research limitations and an explanation of the modifications required for Vietnam. There is no `07_conclusions_colab.ipynb`, `run_conclusions.py` or new dataset. The final English research report contains the complete concluding section; this README supplies its evidence trace and reproduction handoff.
+
+### 12.1 Q1 — Storage, local computation and cluster justification
+
+The acquired Financials panel has **1,682,616 observations across 170 quarters**. In the Part 1 storage experiment, flat uncompressed CSV occupied **350.096 MiB**, while flat Snappy Parquet occupied **240.060 MiB** (**31.43% less**). The 170-partition Parquet layout occupied **240.496 MiB**. Flat Parquet improved median PyArrow read times by **2.01×** (full scan), **2.28×** (projection) and **4.32×** (date-filtered read). These are results for the specific Colab and PyArrow experiment, not universal claims; Parquet used more observed process memory in two of the three flat-file workloads.
+
+The separate Part 3 processing comparison used the verified Part 2 panel. On the full-panel quarterly-aggregation workload, median times were **0.755 s (pandas)**, **0.101 s (Polars)** and **4.300 s (PySpark local[2])**; for adjacent-quarter asset growth they were **0.949 s**, **0.701 s** and **8.947 s**, respectively. All **12** engine/workload/sample output comparisons passed numerical equivalence. Thus the *tested* workloads are manageable on one machine; an actual Spark cluster was **not** benchmarked. A cluster would require separate justification from memory limits, processing deadlines, concurrency and measured multi-node overhead at larger scale.
+
+Evidence: [`notebooks/01_acquisition_colab.ipynb`](notebooks/01_acquisition_colab.ipynb), [`notebooks/02_storage_colab.ipynb`](notebooks/02_storage_colab.ipynb), [`notebooks/04_scalable_processing_colab.ipynb`](notebooks/04_scalable_processing_colab.ipynb); Drive runs `storage_analysis/run_20261114T162520Z/` and `scalable_processing/run_20261114T190627Z/`.
+
+### 12.2 Q2 — Data quality, event histories and temporal integrity
+
+The Part 2 audit preserved **1,682,616 of 1,682,616** Financials observations under its core asset-quality inclusion rule (zero quarantined rows) while recording missingness and numerical screening flags. The most incomplete selected field, `P3ASSET`, was missing in **971,925 records (57.76%)**; **11,710** observations triggered the extreme-ROE screen. These screens are not automatic error corrections. The complete Failures table contains **4,117 records**, of which **488 lack CERT** and cannot be joined by certificate alone. The retrospective terminal audit classified **2,775 distinct CERTs** as confirmed failures and **16,313** as documented other exits; the latter group must **not** be called confirmed mergers.
+
+Part 4 formed **21 current/past-only predictors** and a four-quarter future-failure outcome, retaining **1,665,087 feature-table observations** through 2025Q2. Competing exits and uncertain event evidence were not labelled as certain nonfailures. Development-only preprocessing and a **four-quarter purge** separate the training and held-out periods. The `REPDTE + 90 calendar days` availability rule is an **assumption**, not a recovered historical disclosure timestamp; full vintage-level point-in-time correctness remains unverified.
+
+Evidence: [`notebooks/03_data_quality_panel_colab.ipynb`](notebooks/03_data_quality_panel_colab.ipynb) and [`notebooks/05_feature_pipeline_colab.ipynb`](notebooks/05_feature_pipeline_colab.ipynb); Drive runs `data_quality_panel/run_20261114T175314Z/` and `feature_pipeline/run_20261115T093554Z/`.
+
+### 12.3 Q3 — Honest early-warning validation
+
+Part 5 compared a prevalence baseline, L2-regularized logistic regression and histogram gradient boosting using **three chronological, purged development folds**. Histogram gradient boosting had the highest mean fold Average Precision (**0.206561**) and was selected **before** reading the holdout. The decision threshold (**0.007123045**) was selected from development out-of-fold predictions using a stated cost scenario. The test was then evaluated once on **204,912 labelled bank-quarter observations** from **2008Q1–2014Q4**, containing **1,496 positive bank-quarter labels** associated with **510 distinct positive CERTs**.
+
+The selected model obtained holdout **Average Precision 0.441297**, **ROC-AUC 0.977325** and **Recall@Top 5% 0.917112**. At its frozen threshold: **TP 1,306; FP 5,240; FN 190; TN 198,176**. These are *bank-quarter decisions*, not counts of independently identified failed banks. The estimated decision-cost reduction compared with a prevalence baseline is conditional on the **FDIC resolution-COST proxy** and the **assumed** false-alarm review cost (0.1% of median development assets); it does not represent measured supervisory savings. Spark MLlib's subsampled demo is not a population-level model comparison.
+
+Evidence: [`notebooks/06_modelling_validation_colab.ipynb`](notebooks/06_modelling_validation_colab.ipynb); Drive run `modelling_validation/run_20261115T102427Z/`, including `selection.lock.json`, `test_attempt.json`, `test_predictions.parquet`, `evaluation_manifest.json` and `part5_validation.json`.
+
+### 12.4 Research limitations and adaptation to Vietnam
+
+The US FDIC findings cannot be transferred directly to Vietnam. The main unresolved empirical issues are (i) unavailable historical release vintages and the approximate 90-day reporting delay; (ii) incomplete event linkage and conservative exclusion of some exits; (iii) multiple dependent bank-quarter labels per institutional failure; (iv) a single crisis-period test holdout; (v) single-node rather than multi-node Spark performance evidence; and (vi) uncalibrated scores and a non-causal, assumption-dependent supervisory cost function.
+
+A Vietnam implementation would first require **authorized historical supervisory records** with stable institution identifiers, the date each report became available to the supervisor, revision histories, accounting definitions and documented institutional events. Local risk variables and their reporting basis must be mapped to Vietnamese prudential and accounting standards, not transferred numerically from FDIC ratios. The target must distinguish supervisory intervention, special control, restructuring, resolution and other closures according to the **applicable Vietnamese legal framework**, rather than equating these events with US FDIC failure. Labels and thresholds would need to be defined with Vietnamese authorities, then tested through development-only model selection and at least one untouched chronological holdout. Operational thresholds require estimated *local* false-alarm, missed-event and repeated-intervention costs; human review, access control, audit trails and post-deployment drift monitoring are necessary before supervisory use.
+
+Relevant legal context, distinct from evidence generated by this project: Vietnam's Law on Credit Institutions No. 32/2024/QH15 (as amended) addresses early intervention and special control; State Bank Circular No. 43/2025/TT-NHNN amends banking-supervision procedures. These are **contextual references**, not claims that the FDIC experiments validated a Vietnamese model. Supporting sources: [Deposit Insurance of Vietnam, 2024 Law and institution restructuring](https://www.div.gov.vn/the-law-on-credit-institutions-2024-continuing-to-promote-the-deposit-insurance-of-vietnams-role-in-the-restructuring-of-credit-institutions); [State Bank of Vietnam, Circular 43/2025/TT-NHNN](https://static3.luatvietnam.vn/uploaded/vietlawfile/2025/11/27/432025ttnhnnincompdf_110320.pdf).
+
+### 12.5 Final submission and reproducibility check
+
+**Execution order:** open the six committed notebooks under `notebooks/` in numeric order (`01` → `06`) and follow their section-level prerequisites. Notebooks `01` and `02` form Part 1; `03`, `04`, `05` and `06` implement Parts 2–5. Code and pinned dependencies are provided under `src/`, `requirements.txt`, `requirements_part3.txt`, `requirements_part4.txt`, `requirements_part5.txt`, and the Part-specific command-line runners. The README sections above document each command and Drive path. Reproduction from scratch creates **new run IDs** and repeats the complete analysis; it must **not** claim to reuse historical measurements as a new run. The once-only Part 5 evaluation is gated within each run: do not overwrite its selection lock, delete its test-attempt marker or rerun the test to improve performance.
+
+**Exam submission:** submit the English report separately as PDF or DOCX, **maximum 20 main pages plus a 10-page appendix**; its first page must contain the student's identity, GitHub URL, download method and date, source row counts, development/test intervals and their numbers of failures. Keep this repository public throughout the required grading period, with executed notebook outputs and fixed seeds. Do not commit FDIC data, joblib model files, Drive results or figures as bulk data. Cite FDIC documentation, relevant software/library documentation, the examination sheet and use of AI assistance in both the report and this README, as applicable.

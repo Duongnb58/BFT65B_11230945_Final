@@ -286,3 +286,84 @@ python run_scalable_processing.py verify \
 ### 9.8 Attribution and limitations
 
 Methods are based on the instructor's examination requirements, the verified FDIC acquisition, and official engine documentation: [pandas Parquet I/O](https://pandas.pydata.org/docs/reference/api/pandas.read_parquet.html), [Polars lazy API](https://docs.pola.rs/user-guide/lazy/using/), and [PySpark SQL](https://spark.apache.org/docs/latest/api/python/). The source-code preparation included OpenAI ChatGPT assistance and requires acknowledgment under the course academic-integrity rule. Only actually executed measurements may be reported; validate the Colab results and cite the exact run ID, package versions and Git revision.
+
+## 10. Part 4 – Feature Pipeline (15 points)
+
+### 10.1 Exact source and purpose
+
+Use [`notebooks/05_feature_pipeline_colab.ipynb`](notebooks/05_feature_pipeline_colab.ipynb) **after** the Part 2 panel has been verified. The input run is `data_quality_panel/run_20261114T175314Z/`, which was also the source for the Part 3 processing experiment. Part 3 does not change the panel; it is not necessary to rerun its benchmark to construct features.
+
+Part 4 produces a 21-column bank-risk feature set, an audited future-failure label for a four-quarter horizon, a fixed purged temporal split, and a saved scikit-learn preprocessing pipeline fitted **only on development observations**. Training and test-holdout input files are stored separately. No modelling, model selection, alarm-threshold calibration, or test evaluation occurs here.
+
+**Label:** `Y_FAIL_4Q = 1{FAILDATE ∈ (REPDTE, REPDTE + 4 calendar quarters]}` for a certificate-linked, temporally consistent FDIC failure. The examination's last eligible report is 2025Q2; 2025Q3–2026Q2 remain in the source dataset but are excluded as model observations because their outcome windows are incomplete. Retrospective terminal evidence is used to construct outcome and eligibility only, not predictive inputs.
+
+**Conservative sample rules:** (i) multiple or inconsistent events are unlabelled, (ii) mergers/dated nonfailure exits are never coded as failures, and exits occurring within the four-quarter risk window are treated as competing events and left unlabelled, (iii) unexplained reporting cessation is not coded as a certain negative unless the observed reporting history extends to the horizon, and (iv) failure or exit events before the assumed report-availability date (`REPDTE + 90 days`) are excluded, since the report could not have predicted them under the stated assumption. This is not a reconstruction of true historical FDIC release timestamps. The 488 failure events with missing CERT cannot be identified by certificate and remain a coverage limitation.
+
+### 10.2 Feature design
+
+The 21 features are fixed in `src/fdic_pipeline/feature_policy.py` **before** inspecting the holdout. The exact list and transformations are recorded in `feature_dictionary.csv`. Size is expressed as `log1p(ASSET)`; capital, funding, liquidity, lending and asset quality are ratios of contemporaneous reported amounts with strictly positive denominators; reported ROA, ROE, NIM and risk-based capital percentages remain in their original percentage units. Quarter-over-quarter growth requires the observation in the immediately preceding calendar quarter. Year-over-year growth and the ROA change require the same quarter one year earlier. Missing history or invalid denominators produce nulls, never fabricated growth. Prior-report counts, reporting gaps and quality indicators are calculated using Part 2 current/past observations only. Identifiers and exit information are excluded from model predictors.
+
+The feature pipeline retains source nulls and extreme reported values. It does not use global winsorization, cross-period mean imputation, future-window rolling averages or any retrospectively known institution status as a feature.
+
+### 10.3 Predefined development and test windows
+
+| Sample | Reporting quarters | Purpose |
+|---|---|---|
+| Development | 1984Q1–2006Q4 | Feature preprocessing fit and later time-ordered internal validation |
+| Purge | 2007Q1–2007Q4 | Four-quarter separation between the last development report and first test report |
+| Test holdout | 2008Q1–2014Q4 | One final evaluation in Part 5, after all development-only choices |
+| Unused later reporting quarters | 2015Q1–2025Q2 | Maintained in audited feature table, not included in this fixed model comparison |
+| Immature label quarters | 2025Q3–2026Q2 | Excluded from feature-table modelling observations |
+
+The 2008–2014 test period includes the major financial-crisis failure episode, which is appropriate for a stress-period evaluation. Its eligibility condition is at least **50 distinct positive FDIC certificate numbers**, not 50 bank-quarter labels. This condition is verified from the derived data; a failure is reported rather than silently moving the test interval. The 2007 purge ensures that development outcome windows end by 2007Q4, preceding the first test report. The post-2014 observations are intentionally not used to fit models or select a test threshold under this specific split. This design is a single historical holdout, not a claim to evaluate all periods in the 1984–2025 data.
+
+**Part 5 requirement:** During development-period hyperparameter tuning or chronological cross-validation, construct a fresh sklearn pipeline within each training fold and fit it **only on that fold**. The final saved Part 4 object is fitted on the complete development sample, suitable for final development training after tuning, not for fold-level validation or premature test transformation. The test should be transformed and evaluated only once in Part 5.
+
+### 10.4 Execution and evidence
+
+Use a Google Colab CPU runtime and run every section of Notebook 05 in order, starting with its pinned package installation and unit/real-Parquet integration tests. Zero skipped tests are required before processing the actual panel.
+
+```bash
+python -m pip install -r requirements_part4.txt
+python -m pytest -q -rs tests/test_feature_policy.py tests/test_feature_pipeline_integration.py
+
+python run_feature_pipeline.py run \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/feature_pipeline/run_YYYYMMDDTHHMMSSZ \
+  --min-test-failed-banks 50
+
+python run_feature_pipeline.py verify \
+  --acquisition-dir /content/drive/MyDrive/BFT65B_11230945_Final/fdic_1984Q1_2026Q2 \
+  --part2-dir /content/drive/MyDrive/BFT65B_11230945_Final/data_quality_panel/run_20261114T175314Z \
+  --output-dir /content/drive/MyDrive/BFT65B_11230945_Final/feature_pipeline/run_YYYYMMDDTHHMMSSZ
+```
+
+Replace the run ID with **one new identical UTC run identifier** in both commands. `run` refuses to overwrite an existing output, and `verify` only checks evidence. If an execution is interrupted, use a new run ID after inspecting the incomplete output directory. Do not modify the verified Part 1–3 artifacts.
+
+```text
+feature_pipeline/run_YYYYMMDDTHHMMSSZ/
+├── feature_table/year=YYYY/quarter=Q/part-00000.parquet  # 166 quarters; nullable outcomes
+├── model_data/
+│   ├── development/year=YYYY/quarter=Q/part-00000.parquet  # 92 quarters
+│   └── test_holdout/year=YYYY/quarter=Q/part-00000.parquet # 28 quarters
+├── quarterly_label_audit.csv
+├── label_status_summary.csv
+├── feature_dictionary.csv
+├── sample_summary.json
+├── training_preprocessor.joblib       # development-fitted transformer only
+├── preprocessing_fit.json            # fit data and serialization checksum
+├── figures/
+│   ├── labels_by_period.png
+│   └── development_feature_missingness.png
+├── part4_manifest.json
+└── part4_validation.json
+```
+
+The feature table includes `LABEL_STATUS` and `SPLIT` exclusively for auditing; the model-data Parquet schema contains only `CERT`, `REPDTE`, the 21 approved numeric predictor columns and `Y_FAIL_4Q`. Never use `CERT`, `REPDTE`, `Y_FAIL_4Q`, `LABEL_STATUS` or `SPLIT` as a predictor. The training preprocessing artifact is a serialized sklearn Pipeline; load it only from this trusted, locally generated Drive run. The manifest stores upstream hashes, the Git commit, the complete output file inventory and checksums. No raw FDIC data, fitted objects, trial output or figures are committed to GitHub.
+
+### 10.5 Limitations relevant to the final report
+
+The FDIC extract records reporting quarters but not the historical timestamp of first public availability of every individual observation. The 90-day lag is an explicit approximation. Failure records lacking CERT remain unmatched. Censoring competing exits restricts the supervised population and changes the interpretation from an unconditional full-population failure rate. The test interval is a crisis-period holdout and does not measure performance across later economic regimes. These limitations must accompany modelling results; a passing manifest check cannot establish full historical-vintage correctness.
+
+Sources: [FDIC BankFind Suite API documentation](https://api.fdic.gov/banks/docs/), the BFT65B course examination sheet, Part 1 instructor starter, official documentation for scikit-learn Pipeline, SimpleImputer and RobustScaler, and disclosed AI assistance as documented in this repository's academic-integrity note.
